@@ -74,6 +74,8 @@ test('filters loaded messages and opens a detail with a read action', async t =>
   assert.equal(app.document.querySelector('.detail-body').textContent, detail.body);
   assert.equal(app.document.querySelector('#markUnreadButton').textContent, '标为未读');
   assert.ok(app.calls.some(call => call.url.startsWith('/api/messages/42?')));
+  const readUpdate = app.calls.find(call => call.url.startsWith('/api/messages/42/read'));
+  assert.deepEqual(JSON.parse(readUpdate.options.body), { account: 'Personal', mailbox: 'Inbox', read: true });
 });
 
 test('compose form sends through the local Mail API', async t => {

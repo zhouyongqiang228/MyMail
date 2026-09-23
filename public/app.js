@@ -109,6 +109,9 @@ function renderMailboxes() {
 function mailboxQuery(mailbox) {
   return new URLSearchParams({ account: mailbox.account, mailbox: mailbox.name }).toString();
 }
+function readPayload(mailbox, read) {
+  return { account: mailbox.account, mailbox: mailbox.name, read };
+}
 async function loadMessages() {
   if (!state.selectedMailbox) return;
   $('#folderTitle').textContent = state.selectedMailbox.name;
@@ -176,7 +179,7 @@ async function openMessage(message) {
     const detail = await api('/api/messages/' + encodeURIComponent(message.id) + '?' + mailboxQuery(state.selectedMailbox));
     state.currentMessage = detail;
     if (!detail.read) {
-      await api('/api/messages/' + encodeURIComponent(message.id) + '/read', { method: 'POST', body: JSON.stringify({ ...state.selectedMailbox, read: true }) });
+      await api('/api/messages/' + encodeURIComponent(message.id) + '/read', { method: 'POST', body: JSON.stringify(readPayload(state.selectedMailbox, true)) });
       message.read = true;
       detail.read = true;
       const mailbox = state.mailboxes.find(item => mailboxKey(item) === mailboxKey(state.selectedMailbox));
@@ -213,7 +216,7 @@ async function toggleRead() {
   if (!message || !state.selectedMailbox) return;
   const read = !message.read;
   try {
-    await api('/api/messages/' + encodeURIComponent(message.id) + '/read', { method: 'POST', body: JSON.stringify({ ...state.selectedMailbox, read }) });
+    await api('/api/messages/' + encodeURIComponent(message.id) + '/read', { method: 'POST', body: JSON.stringify(readPayload(state.selectedMailbox, read)) });
     message.read = read;
     const row = state.messages.find(item => item.id === message.id);
     if (row) row.read = read;
