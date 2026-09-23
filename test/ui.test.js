@@ -10,7 +10,7 @@ const settle = async () => { await new Promise(resolve => setImmediate(resolve))
 const message = { id: '42', sender: 'Lin <lin@example.test>', subject: '周末安排', date: '2026-09-23T01:00:00Z', read: false, flagged: true };
 const detail = { ...message, body: '你好\n周末见。' };
 
-async function makeApp(t) {
+async function makeApp(t, { detailData = detail } = {}) {
   const dom = new JSDOM(html, { url: 'http://localhost:3001', runScripts: 'outside-only' });
   const calls = [];
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -26,7 +26,7 @@ async function makeApp(t) {
     ] });
     if (String(url).startsWith('/api/messages?')) return result({ messages: [message] });
     if (String(url).startsWith('/api/messages/42/read')) return result({ ok: true });
-    if (String(url).startsWith('/api/messages/42?')) return result(detail);
+    if (String(url).startsWith('/api/messages/42?')) return result(detailData);
     if (url === '/api/send') return result({ ok: true });
     return result({ error: 'not found' }, 404);
   };
@@ -76,6 +76,15 @@ test('filters loaded messages and opens a detail with a read action', async t =>
   assert.ok(app.calls.some(call => call.url.startsWith('/api/messages/42?')));
   const readUpdate = app.calls.find(call => call.url.startsWith('/api/messages/42/read'));
   assert.deepEqual(JSON.parse(readUpdate.options.body), { account: 'Personal', mailbox: 'Inbox', read: true });
+});
+
+test('opening a message reconciles a stale unread row with an already-read detail', async t => {
+  const app = await makeApp(t, { detailData: { ...detail, read: true } });
+  app.document.querySelector('.message-row').click();
+  await settle();
+  assert.equal(app.calls.some(call => call.url.startsWith('/api/messages/42/read')), false);
+  app.document.querySelector('#backButton').click();
+  assert.equal(app.document.querySelector('.message-row').classList.contains('unread'), false);
 });
 
 test('compose form sends through the local Mail API', async t => {

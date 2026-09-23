@@ -14,6 +14,8 @@ test('AppleScript text arguments keep quotes and line breaks inside literals', (
 
 test('message lookup only accepts numeric Mail IDs and mailbox values stay quoted', () => {
   assert.throws(() => messageDetailScript({ account: 'Personal', mailbox: 'Inbox', id: '1; do shell script "bad"' }), /无效的邮件编号/);
+  const largeID = messageDetailScript({ account: 'Personal', mailbox: 'Inbox', id: '9007199254740993' });
+  assert.match(largeID, /whose id is 9007199254740993/);
   const script = messageListScript({ account: 'x"\non run', mailbox: 'Inbox" & do shell script "bad' });
   assert.match(script, /targetAccount to first account whose name is/);
   assert.match(script, /linefeed/);

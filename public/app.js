@@ -1,4 +1,4 @@
-const state = { allMailboxes: [], mailboxes: [], accounts: [], account: null, selectedMailbox: null, messages: [], currentMessage: null, search: '' };
+const state = { allMailboxes: [], mailboxes: [], accounts: [], account: null, selectedMailbox: null, messages: [], currentMessage: null, search: '', openRequest: 0 };
 const $ = selector => document.querySelector(selector);
 const isInbox = name => /^(inbox|收件箱)$/i.test(String(name || '').trim());
 const isSent = name => /^(sent|sent messages|已发邮件|已发送)$/i.test(String(name || '').trim());
@@ -14,7 +14,7 @@ function showError(message) {
   $('#errorText').textContent = message;
   $('#errorToast').classList.remove('hidden');
 }
-function mailboxKey(mailbox) { return JSON.stringify([mailbox.account, mailbox.name]); }
+function mailboxKey(mailbox) { return mailbox ? JSON.stringify([mailbox.account, mailbox.name]) : ''; }
 function savedAccount() {
   try { return window.localStorage.getItem('mailAccount'); } catch { return null; }
 }
@@ -112,6 +112,17 @@ function mailboxQuery(mailbox) {
 function readPayload(mailbox, read) {
   return { account: mailbox.account, mailbox: mailbox.name, read };
 }
+function isRead(message) {
+  return message?.read === true || message?.read === 'true';
+}
+function setReadState(message, read) {
+  message.read = read;
+  const row = state.messages.find(item => String(item.id) === String(message.id));
+  if (row) row.read = read;
+}
+function decrementUnread(mailbox) {
+  if (mailbox) mailbox.unread = Math.max(0, Number(mailbox.unread) || 0) - 1;
+}
 async function loadMessages() {
   if (!state.selectedMailbox) return;
   $('#folderTitle').textContent = state.selectedMailbox.name;
@@ -146,8 +157,8 @@ function renderMessages() {
     const row = document.createElement('button');
     row.type = 'button';
     row.className = 'message-row';
-    row.classList.toggle('unread', !message.read);
-    row.classList.toggle('selected', state.currentMessage && state.currentMessage.id === message.id);
+    row.classList.toggle('unread', !isRead(message));
+    row.classList.toggle('selected', state.currentMessage && String(state.currentMessage.id) === String(message.id));
     const sender = document.createElement('span');
     sender.className = 'message-sender';
     sender.textContent = message.sender || '未知发件人';
@@ -173,24 +184,32 @@ function formatDate(value) {
   return new Intl.DateTimeFormat('zh-CN', sameDay ? { hour: 'numeric', minute: '2-digit' } : { month: 'numeric', day: 'numeric' }).format(date);
 }
 async function openMessage(message) {
+  const requestId = ++state.openRequest;
+  const mailbox = state.selectedMailbox;
   state.currentMessage = message;
   $('#messageList').setAttribute('aria-busy', 'true');
   try {
-    const detail = await api('/api/messages/' + encodeURIComponent(message.id) + '?' + mailboxQuery(state.selectedMailbox));
+    const detail = await api('/api/messages/' + encodeURIComponent(message.id) + '?' + mailboxQuery(mailbox));
+    if (requestId !== state.openRequest || mailboxKey(mailbox) !== mailboxKey(state.selectedMailbox)) return;
     state.currentMessage = detail;
-    if (!detail.read) {
-      await api('/api/messages/' + encodeURIComponent(message.id) + '/read', { method: 'POST', body: JSON.stringify(readPayload(state.selectedMailbox, true)) });
-      message.read = true;
-      detail.read = true;
-      const mailbox = state.mailboxes.find(item => mailboxKey(item) === mailboxKey(state.selectedMailbox));
-      if (mailbox && mailbox.unread) mailbox.unread -= 1;
-      renderMailboxes();
+    const detailWasRead = isRead(detail);
+    if (!detailWasRead) {
+      await api('/api/messages/' + encodeURIComponent(message.id) + '/read', { method: 'POST', body: JSON.stringify(readPayload(mailbox, true)) });
+      if (requestId !== state.openRequest || mailboxKey(mailbox) !== mailboxKey(state.selectedMailbox)) return;
     }
+    const listMailbox = state.mailboxes.find(item => mailboxKey(item) === mailboxKey(mailbox));
+    if (!isRead(message) || !detailWasRead) decrementUnread(listMailbox);
+    setReadState(message, true);
+    detail.read = true;
+    renderMailboxes();
     renderDetail(detail);
     $('#listPanel').classList.add('hidden');
     $('#detailPanel').classList.remove('hidden');
-  } catch (error) { showError(error.message); }
-  finally { $('#messageList').setAttribute('aria-busy', 'false'); }
+  } catch (error) {
+    if (requestId === state.openRequest) showError(error.message);
+  } finally {
+    if (requestId === state.openRequest) $('#messageList').setAttribute('aria-busy', 'false');
+  }
 }
 function renderDetail(message) {
   const article = $('#messageDetail');
@@ -209,19 +228,17 @@ function renderDetail(message) {
   body.className = 'detail-body';
   body.textContent = message.body || '';
   article.append(heading, metadata, body);
-  $('#markUnreadButton').textContent = message.read ? '标为未读' : '标为已读';
+  $('#markUnreadButton').textContent = isRead(message) ? '标为未读' : '标为已读';
 }
 async function toggleRead() {
   const message = state.currentMessage;
   if (!message || !state.selectedMailbox) return;
-  const read = !message.read;
+  const read = !isRead(message);
   try {
     await api('/api/messages/' + encodeURIComponent(message.id) + '/read', { method: 'POST', body: JSON.stringify(readPayload(state.selectedMailbox, read)) });
-    message.read = read;
-    const row = state.messages.find(item => item.id === message.id);
-    if (row) row.read = read;
+    setReadState(message, read);
     const mailbox = state.mailboxes.find(item => mailboxKey(item) === mailboxKey(state.selectedMailbox));
-    if (mailbox) mailbox.unread = Math.max(0, mailbox.unread + (read ? -1 : 1));
+    if (mailbox) mailbox.unread = Math.max(0, Number(mailbox.unread) || 0) + (read ? -1 : 1);
     renderDetail(message);
     renderMailboxes();
   } catch (error) { showError(error.message); }
