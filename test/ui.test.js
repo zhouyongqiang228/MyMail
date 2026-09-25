@@ -60,7 +60,7 @@ test('connects to Apple Mail and lists real mailboxes without demo messages', as
 
 test('opens on automatic reply controls and exposes both interval settings', async t => {
   const app = await makeApp(t);
-  assert.deepEqual([...app.document.querySelectorAll('.automation-tab')].map(tab => tab.textContent), ['自动运行', '设置']);
+  assert.deepEqual([...app.document.querySelectorAll('.automation-tab')].map(tab => tab.textContent), ['自动运行', '调试', '设置']);
   assert.equal(app.document.querySelector('#autoPane').classList.contains('hidden'), false);
   assert.equal(app.document.querySelector('#debugPane').classList.contains('hidden'), true);
   assert.ok(app.document.querySelector('#autoLog'));

@@ -89,7 +89,7 @@ h1 { margin: 0; font-size: 17px; font-weight: 620; }
 .error-toast { position: absolute; right: 20px; bottom: 18px; display: flex; align-items: center; gap: 22px; max-width: calc(100% - 40px); padding: 10px 12px 10px 15px; border: 1px solid #e8d6bf; border-radius: 5px; background: #fff9f1; box-shadow: 0 3px 14px #25352e12; color: #695033; font-size: 12px; }
 .error-toast button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 19px; }
 .automation-panel { min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
-.automation-tabs { display: grid; grid-template-columns: repeat(2, 1fr); min-height: 48px; border-bottom: 1px solid var(--line); }
+.automation-tabs { display: grid; grid-template-columns: repeat(3, 1fr); min-height: 48px; border-bottom: 1px solid var(--line); }
 .automation-tab { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #77817c; cursor: pointer; font-size: 12px; }
 .automation-tab:hover { color: var(--green); background: #fafcfb; }
 .automation-tab.active { border-bottom-color: var(--green); color: #17684f; font-weight: 650; }
