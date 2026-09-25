@@ -37,6 +37,7 @@ test('send script includes optional recipients and escapes body content', () => 
 
 test('scripts query the selected mailbox and mark read state explicitly', () => {
   assert.match(mailboxListScript(), /mailboxes of accountRef/);
+  assert.match(mailboxListScript(), /accountRows/);
   assert.match(messageListScript({ account: 'Personal', mailbox: 'Inbox' }), /flagged status/);
   assert.match(messageListScript({ account: 'Personal', mailbox: 'Inbox' }), /isoDate/);
   assert.match(markReadScript({ account: 'Personal', mailbox: 'Inbox', id: 25, read: false }), /set read status of messageRef to false/);

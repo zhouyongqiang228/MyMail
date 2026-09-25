@@ -10,14 +10,15 @@ const settle = async () => { await new Promise(resolve => setImmediate(resolve))
 const message = { id: '42', sender: 'Lin <lin@example.test>', subject: '周末安排', date: '2026-09-23T01:00:00Z', read: false, flagged: true };
 const detail = { ...message, body: '你好\n周末见。' };
 
-async function makeApp(t, { detailData = detail } = {}) {
+async function makeApp(t, { detailData = detail, mailboxData } = {}) {
   const dom = new JSDOM(html, { url: 'http://localhost:3001', runScripts: 'outside-only' });
   const calls = [];
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  dom.window.confirm = () => true;
   dom.window.fetch = async (url, options = {}) => {
     calls.push({ url: String(url), options });
-    if (url === '/api/mailboxes') return result({ mailboxes: [
+    if (url === '/api/mailboxes') return result(mailboxData || { mailboxes: [
       { account: 'Personal', name: 'Inbox', unread: 1 },
       { account: 'Personal', name: 'Sent', unread: 0 },
       { account: 'Personal', name: 'Drafts', unread: 0 },
@@ -27,6 +28,10 @@ async function makeApp(t, { detailData = detail } = {}) {
     if (String(url).startsWith('/api/messages?')) return result({ messages: [message] });
     if (String(url).startsWith('/api/messages/42/read')) return result({ ok: true });
     if (String(url).startsWith('/api/messages/42?')) return result(detailData);
+    if (url === '/api/debug/session' && options.method === 'POST') return result({ sessionId: 'session-1', cursor: { id: '8', date: '2026-09-24T01:00:00' }, startedAt: '2026-09-24T01:00:00.000Z' });
+    if (url === '/api/debug/session/session-1/messages') return result({ messages: [{ id: '9', sender: 'Person <person@example.test>', subject: '借钱', date: '2026-09-24T02:00:00', body: '可以借我一些钱吗？', debugStatus: 'pending' }] });
+    if (url === '/api/debug/session/session-1' && options.method === 'DELETE') return result({ ok: true });
+    if (url === '/api/debug/messages/9/generate-reply') return result({ id: '9', sender: 'Person <person@example.test>', subject: '借钱', reply: '抱歉，我目前不方便借钱。' });
     if (url === '/api/send') return result({ ok: true });
     return result({ error: 'not found' }, 404);
   };
@@ -63,6 +68,21 @@ test('defaults to the first account and lets the user switch the two visible fol
   assert.ok(app.calls.some(call => call.url.includes('account=Work')));
 });
 
+test('keeps an account with no folders in the account switcher', async t => {
+  const app = await makeApp(t, { mailboxData: {
+    accounts: ['Personal', 'Work'],
+    mailboxes: [{ account: 'Work', name: 'INBOX', unread: 2 }, { account: 'Work', name: '已发邮件', unread: 0 }],
+  } });
+  const accountSelect = app.document.querySelector('#accountSelect');
+  assert.equal(accountSelect.disabled, false);
+  assert.deepEqual([...accountSelect.options].map(option => option.value), ['Personal', 'Work']);
+  accountSelect.value = 'Work';
+  accountSelect.dispatchEvent(new app.dom.window.Event('change', { bubbles: true }));
+  await settle();
+  assert.equal(app.document.querySelector('#folderTitle').textContent, 'INBOX');
+  assert.ok(app.calls.some(call => call.url.includes('account=Work')));
+});
+
 test('filters loaded messages and opens a detail with a read action', async t => {
   const app = await makeApp(t);
   app.document.querySelector('#searchInput').value = '周末';
@@ -85,6 +105,57 @@ test('opening a message reconciles a stale unread row with an already-read detai
   assert.equal(app.calls.some(call => call.url.startsWith('/api/messages/42/read')), false);
   app.document.querySelector('#backButton').click();
   assert.equal(app.document.querySelector('.message-row').classList.contains('unread'), false);
+});
+
+test('stopping a debug session deletes its server data and clears the test panel', async t => {
+  const app = await makeApp(t);
+  const stopButton = app.document.querySelector('#resetSessionButton');
+  assert.equal(stopButton.textContent, '停止监听并清空数据');
+  app.document.querySelector('#startSessionButton').click();
+  await settle();
+  assert.equal(stopButton.disabled, false);
+  assert.equal(app.document.querySelector('#startSessionButton').disabled, true);
+  stopButton.click();
+  await settle();
+  assert.ok(app.calls.some(call => call.url === '/api/debug/session/session-1' && call.options.method === 'DELETE'));
+  assert.equal(stopButton.disabled, true);
+  assert.equal(app.document.querySelector('#startSessionButton').disabled, false);
+  assert.equal(app.document.querySelector('#listenStatus').textContent, '尚未开始测试会话');
+  assert.equal(app.document.querySelector('#listenLog').textContent, '等待操作。');
+  assert.equal(app.document.querySelector('.empty-debug').textContent, '还没有发现测试邮件。');
+});
+
+test('switching mailboxes stops and removes the previous debug session', async t => {
+  const app = await makeApp(t);
+  app.document.querySelector('#startSessionButton').click();
+  await settle();
+  app.document.querySelectorAll('.mailbox-item')[1].click();
+  await settle();
+  const deletion = app.calls.findIndex(call => call.url === '/api/debug/session/session-1' && call.options.method === 'DELETE');
+  const switchedMailbox = app.calls.findIndex(call => call.url.includes('mailbox=Sent'));
+  assert.ok(deletion >= 0);
+  assert.ok(switchedMailbox > deletion);
+  assert.equal(app.document.querySelector('#listenStatus').textContent, '尚未开始测试会话');
+  assert.equal(app.document.querySelector('#debugContext').textContent, '正在测试：Personal / Sent');
+});
+
+test('selecting a discovered email opens the editor and reply instructions reach generation', async t => {
+  const app = await makeApp(t);
+  app.document.querySelector('#startSessionButton').click();
+  await settle();
+  app.document.querySelector('#checkNewButton').click();
+  await settle();
+  const selectButton = app.document.querySelector('.debug-message-action');
+  assert.equal(selectButton.textContent, '选择邮件');
+  selectButton.click();
+  assert.equal(app.document.querySelector('#replyEditor').classList.contains('hidden'), false);
+  assert.equal(app.document.querySelector('.debug-message-action').textContent, '已选中');
+  app.document.querySelector('#replyInstructions').value = '如果对方借钱，请礼貌但明确地拒绝。';
+  app.document.querySelector('#generateReplyButton').click();
+  await settle();
+  const generation = app.calls.find(call => call.url === '/api/debug/messages/9/generate-reply');
+  assert.deepEqual(JSON.parse(generation.options.body), { sessionId: 'session-1', instructions: '如果对方借钱，请礼貌但明确地拒绝。' });
+  assert.equal(app.document.querySelector('#replyBody').value, '抱歉，我目前不方便借钱。');
 });
 
 test('compose form sends through the local Mail API', async t => {

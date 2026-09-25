@@ -116,4 +116,10 @@ test('debug test sessions keep discovered messages and reject duplicate sends', 
   const duplicate = await fetch(base + '/api/debug/messages/9/send-reply', { ...json, method: 'POST', body: JSON.stringify({ sessionId: session.sessionId, body: 'Again' }) });
   assert.equal(duplicate.status, 409);
   assert.ok(scripts.some(script => script.includes('set candidateRows to {}')));
+  const stopped = await fetch(base + '/api/debug/session/' + session.sessionId, { method: 'DELETE' });
+  assert.deepEqual(await stopped.json(), { ok: true });
+  const clearedMessages = await fetch(base + '/api/debug/session/' + session.sessionId + '/messages');
+  assert.equal(clearedMessages.status, 404);
+  const clearedSend = await fetch(base + '/api/debug/messages/9/send-reply', { ...json, method: 'POST', body: JSON.stringify({ sessionId: session.sessionId, body: 'Again' }) });
+  assert.equal(clearedSend.status, 404);
 });

@@ -62,11 +62,13 @@ function resetDebugUi() {
   $('#debugContext').textContent = `正在测试：${debugContextLabel()}`;
   $('#listenStatus').textContent = '尚未开始测试会话';
   $('#checkStatus').textContent = '请先开始监听。';
+  $('#startSessionButton').disabled = false;
   $('#checkNewButton').disabled = true;
   $('#resetSessionButton').disabled = true;
   $('#replyEditor').classList.add('hidden');
   $('#replyEmpty').classList.remove('hidden');
   $('#replyStatus').textContent = '';
+  $('#replyInstructions').value = '';
   $('#newDebugMessages').replaceChildren(debugMessageElement(null));
   for (const step of ['listen', 'check', 'reply']) $(`#${step}Log`).textContent = '等待操作。';
 }
@@ -75,8 +77,26 @@ function setDebugSession(session) {
   $('#debugContext').textContent = `正在测试：${debugContextLabel()}`;
   $('#listenStatus').textContent = `已开始监听，等待新邮件\n开始时间：${session.startedAt}`;
   $('#checkStatus').textContent = '等待新邮件；准备好后点击“检查新邮件”。';
+  $('#startSessionButton').disabled = true;
   $('#checkNewButton').disabled = false;
   $('#resetSessionButton').disabled = false;
+}
+async function stopDebugSessionForMailboxChange() {
+  if (!state.debugSession) return;
+  const session = state.debugSession;
+  $('#startSessionButton').disabled = true;
+  $('#checkNewButton').disabled = true;
+  $('#resetSessionButton').disabled = true;
+  try {
+    await api('/api/debug/session/' + encodeURIComponent(session.sessionId), { method: 'DELETE' });
+  } catch (error) {
+    if (state.debugSession === session) {
+      $('#startSessionButton').disabled = true;
+      $('#checkNewButton').disabled = false;
+      $('#resetSessionButton').disabled = false;
+    }
+    throw error;
+  }
 }
 function applyAccountFilter() {
   state.mailboxes = state.allMailboxes.filter(item => item.account === state.account && (isInbox(item.name) || isSent(item.name)));
@@ -91,7 +111,7 @@ function renderAccountSelect() {
     option.selected = account === state.account;
     select.append(option);
   }
-  select.disabled = state.accounts.length < 2;
+  select.disabled = state.accounts.length === 0;
 }
 function updateStatus(connected, label) {
   $('#statusDot').classList.toggle('online', connected);
@@ -102,8 +122,12 @@ async function loadMailboxes() {
   $('#mailboxList').innerHTML = '<div class="sidebar-message">正在读取邮箱…</div>';
   try {
     const response = await api('/api/mailboxes');
-    state.allMailboxes = Array.isArray(response) ? response : response.mailboxes || [];
-    state.accounts = [...new Set(state.allMailboxes.map(item => item.account).filter(Boolean))];
+    const payload = Array.isArray(response) ? { mailboxes: response } : response || {};
+    state.allMailboxes = Array.isArray(payload.mailboxes) ? payload.mailboxes : [];
+    const reportedAccounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+    state.accounts = [...new Set([...reportedAccounts, ...state.allMailboxes.map(item => item.account)])]
+      .map(account => String(account || '').trim())
+      .filter(Boolean);
     const preferredAccount = savedAccount();
     state.account = state.accounts.includes(preferredAccount) ? preferredAccount : state.accounts[0] || null;
     applyAccountFilter();
@@ -151,7 +175,10 @@ function renderMailboxes() {
     unread.className = 'unread-count';
     unread.textContent = mailbox.unread ? String(mailbox.unread) : '';
     button.append(icon, labels, unread);
-    button.addEventListener('click', () => {
+    button.addEventListener('click', async () => {
+      if (mailboxKey(mailbox) === mailboxKey(state.selectedMailbox)) return;
+      try { await stopDebugSessionForMailboxChange(); }
+      catch (error) { showError(error.message); return; }
       state.selectedMailbox = mailbox;
       state.currentMessage = null;
       resetDebugUi();
@@ -210,6 +237,7 @@ function debugMessageElement(message) {
   }
   const card = document.createElement('article');
   card.className = 'debug-message-card';
+  card.classList.toggle('selected', String(state.selectedDebugMessage?.id) === String(message.id));
   const heading = document.createElement('div');
   heading.className = 'debug-message-heading';
   const subject = document.createElement('strong');
@@ -227,8 +255,9 @@ function debugMessageElement(message) {
   const action = document.createElement('button');
   action.type = 'button';
   action.className = 'button debug-message-action';
-  action.textContent = message.debugStatus === 'sent' ? '已发送' : '生成回复';
+  action.textContent = message.debugStatus === 'sent' ? '已发送' : String(state.selectedDebugMessage?.id) === String(message.id) ? '已选中' : '选择邮件';
   action.disabled = message.debugStatus === 'sent';
+  action.setAttribute('aria-pressed', String(String(state.selectedDebugMessage?.id) === String(message.id)));
   action.addEventListener('click', () => selectDebugMessage(message));
   card.append(heading, meta, body, action);
   return card;
@@ -262,7 +291,7 @@ async function startDebugSession() {
   } catch (error) {
     debugLog('listen', `失败：${error.message}`, 'error');
     $('#listenStatus').textContent = '监听未开始，可查看下面日志后重试。';
-  } finally { button.disabled = false; }
+  } finally { button.disabled = Boolean(state.debugSession); }
 }
 async function checkNewDebugMessages() {
   if (!state.selectedMailbox || !state.debugSession) return debugLog('check', '失败：请先开始监听新邮件。', 'error');
@@ -293,6 +322,7 @@ function selectDebugMessage(message) {
   $('#replyBody').value = message.reply || '';
   $('#replyStatus').textContent = message.debugStatus === 'sent' ? '已发送，不能重复发送' : message.debugStatus === 'failed' ? '处理失败，可以重试。' : message.debugStatus === 'generated' ? '回复已生成，可以编辑后发送。' : '已选择邮件，可以生成回复。';
   $('#sendReplyButton').disabled = message.debugStatus === 'sent';
+  renderDebugNew();
   debugLog('reply', `已选择邮件：${message.subject || '(无主题)'}，ID ${message.id}`);
 }
 async function generateReply() {
@@ -303,7 +333,7 @@ async function generateReply() {
   $('#replyStatus').textContent = '正在请求 AI 生成回复…';
   debugLog('reply', `开始生成回复：邮件 ID ${message.id}`);
   try {
-    const result = await api('/api/debug/messages/' + encodeURIComponent(message.id) + '/generate-reply', { method: 'POST', body: JSON.stringify({ sessionId: state.debugSession?.sessionId }) });
+    const result = await api('/api/debug/messages/' + encodeURIComponent(message.id) + '/generate-reply', { method: 'POST', body: JSON.stringify({ sessionId: state.debugSession?.sessionId, instructions: $('#replyInstructions').value.trim() }) });
     message.reply = result.reply || '';
     message.debugStatus = 'generated';
     $('#replyBody').value = message.reply;
@@ -329,7 +359,7 @@ async function sendReply() {
   try {
     let body = $('#replyBody').value.trim();
     if (!body) {
-      const generated = await api('/api/debug/messages/' + encodeURIComponent(message.id) + '/generate-reply', { method: 'POST', body: JSON.stringify({ sessionId: state.debugSession?.sessionId }) });
+      const generated = await api('/api/debug/messages/' + encodeURIComponent(message.id) + '/generate-reply', { method: 'POST', body: JSON.stringify({ sessionId: state.debugSession?.sessionId, instructions: $('#replyInstructions').value.trim() }) });
       body = String(generated.reply || '').trim();
       $('#replyBody').value = body;
       message.reply = body;
@@ -484,6 +514,12 @@ async function toggleRead() {
 }
 $('#refreshButton').addEventListener('click', loadMailboxes);
 $('#accountSelect').addEventListener('change', async event => {
+  try { await stopDebugSessionForMailboxChange(); }
+  catch (error) {
+    event.target.value = state.account;
+    showError(error.message);
+    return;
+  }
   state.account = event.target.value;
   saveAccount(state.account);
   state.selectedMailbox = null;
@@ -543,9 +579,17 @@ for (const tab of document.querySelectorAll('.automation-tab')) {
 }
 $('#startSessionButton').addEventListener('click', startDebugSession);
 $('#checkNewButton').addEventListener('click', checkNewDebugMessages);
-$('#resetSessionButton').addEventListener('click', () => {
-  if (!window.confirm('这会清除当前测试会话和已发现邮件，是否重新开始？')) return;
-  resetDebugUi();
+$('#resetSessionButton').addEventListener('click', async () => {
+  if (!state.debugSession || !window.confirm('停止监听并清空当前测试会话、已发现邮件及回复数据？')) return;
+  const button = $('#resetSessionButton');
+  button.disabled = true;
+  try {
+    await api('/api/debug/session/' + encodeURIComponent(state.debugSession.sessionId), { method: 'DELETE' });
+    resetDebugUi();
+  } catch (error) {
+    button.disabled = false;
+    showError(error.message);
+  }
 });
 $('#generateReplyButton').addEventListener('click', generateReply);
 $('#sendReplyButton').addEventListener('click', sendReply);

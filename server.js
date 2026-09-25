@@ -175,6 +175,12 @@ export function createApp({ runScript = runAppleScript } = {}) {
     await debugMessagesForSession(req, res, session);
   });
 
+  app.delete('/api/debug/session/:id', (req, res) => {
+    const deleted = debugSessions.delete(String(req.params.id));
+    if (!deleted) return res.status(404).json({ error: '测试会话不存在或已清空' });
+    res.json({ ok: true });
+  });
+
   function findDebugMessage(id, sessionId) {
     const key = String(id);
     const session = sessionId ? debugSessions.get(String(sessionId)) : null;
@@ -186,7 +192,8 @@ export function createApp({ runScript = runAppleScript } = {}) {
     if (!message) return res.status(404).json({ error: '测试邮件不存在，请先检查新邮件' });
     if (message.debugStatus === 'sent') return res.status(409).json({ error: '这封邮件已发送，不能重复发送' });
     try {
-      message.reply = await generateReply(readSettings(), message, { signal: req.upstreamSignal });
+      const instructions = String(req.body?.instructions || '').trim().slice(0, 2000);
+      message.reply = await generateReply(readSettings(), message, { signal: req.upstreamSignal, instructions });
       message.debugStatus = 'generated';
       res.json({ id: message.id, reply: message.reply, sender: message.sender, subject: message.subject, status: message.debugStatus });
     } catch (error) {
