@@ -1,0 +1,22 @@
+appId: com.alex.mymail
+productName: MyMail
+directories:
+  output: dist
+files:
+  - desktop/**
+  - assets/**
+  - public/**
+  - lib/**
+  - server.js
+  - package.json
+asar: true
+mac:
+  category: public.app-category.productivity
+  icon: assets/MyMail.icns
+  identity: '-'
+  hardenedRuntime: true
+  entitlements: desktop/entitlements.mac.plist
+  entitlementsInherit: desktop/entitlements.mac.plist
+  extendInfo:
+    NSAppleEventsUsageDescription: MyMail 需要访问 macOS「邮件」，以读取邮箱并执行你选择的邮件操作。
+    NSHumanReadableCopyright: MyMail

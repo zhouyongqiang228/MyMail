@@ -161,3 +161,47 @@ test('settings reject invalid automation intervals', async t => {
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /整数秒数/);
 });
+
+test('desktop server requires its private token for both the UI and mail actions', async t => {
+  let calls = 0;
+  const app = createApp({ accessToken: 'private-token', runScript: async () => { calls++; return 'Mail'; } });
+  const server = createServer(app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = 'http://127.0.0.1:' + server.address().port;
+  for (const route of ['/', '/api/status', '/api/settings']) {
+    assert.equal((await fetch(base + route)).status, 403);
+    assert.equal((await fetch(base + route, { headers: { 'X-MyMail-Token': 'wrong' } })).status, 403);
+  }
+  assert.equal(calls, 0);
+  const response = await fetch(base + '/api/status', { headers: { 'X-MyMail-Token': 'private-token' } });
+  assert.equal(response.status, 200);
+  assert.equal(calls, 1);
+});
+
+test('desktop shutdown cancels an active check and prevents a pending start from reviving it', async t => {
+  for (const pendingStart of [false, true]) {
+    let activeSignal;
+    let started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    const app = createApp({ runScript: async (script, { signal }) => {
+      if (!pendingStart && script.includes('if (count of allMessages) is 0')) return JSON.stringify({ id: '8', date: '2026-09-24T01:00:00' });
+      activeSignal = signal;
+      started();
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
+    } });
+    const server = createServer(app);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => { app.locals.shutdown(); return new Promise(resolve => server.close(resolve)); });
+    const base = 'http://127.0.0.1:' + server.address().port;
+    const response = fetch(base + '/api/automation/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: 'Personal', mailbox: 'Inbox' }),
+    });
+    await waiting;
+    app.locals.shutdown();
+    assert.equal(activeSignal.aborted, true);
+    assert.equal((await response).status, pendingStart ? 502 : 200);
+    assert.equal((await fetch(base + '/api/automation').then(result => result.json())).running, false);
+  }
+});

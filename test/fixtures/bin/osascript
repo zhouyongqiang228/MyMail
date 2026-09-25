@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+let script = '';
+for await (const chunk of process.stdin) script += chunk;
+if (script.includes('make new outgoing message')) throw new Error('Desktop smoke tests must never send mail');
+if (script.includes('return name')) console.log('Mail');
+else if (script.includes('if (count of allMessages) is 0')) console.log(JSON.stringify({ id: '8', date: '2026-09-24T01:00:00' }));
+else if (script.includes('set candidateRows to {}')) console.log('[]');
+else if (script.includes('unread count of mailboxRef')) console.log(JSON.stringify([
+  { account: 'Desktop Test', name: 'INBOX', unread: 0 },
+  { account: 'Desktop Test', name: 'Sent', unread: 0 },
+]));
+else console.log('[]');

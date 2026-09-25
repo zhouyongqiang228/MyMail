@@ -3,15 +3,23 @@
   "version": "1.0.0",
   "description": "macOS Apple Mail workspace controlled with AppleScript",
   "type": "module",
+  "main": "desktop/main.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
-    "test": "node --test"
+    "start": "electron .",
+    "dev": "electron .",
+    "start:web": "node server.js",
+    "build:icons": "swift scripts/build-icons.swift",
+    "build:mac": "electron-builder --mac dir --arm64",
+    "test": "node --test test/*.test.js",
+    "test:desktop": "node scripts/test-desktop.mjs"
   },
   "dependencies": {
     "express": "^4.21.2"
   },
   "devDependencies": {
-    "jsdom": "^29.1.1"
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3",
+    "jsdom": "^29.1.1",
+    "playwright": "1.63.0"
   }
 }

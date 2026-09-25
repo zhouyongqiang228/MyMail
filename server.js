@@ -51,8 +51,14 @@ function sendDetailedError(req, res, { status = 502, event, fallback, error }) {
   });
 }
 
-export function createApp({ runScript = runAppleScript } = {}) {
+export function createApp({ runScript = runAppleScript, accessToken } = {}) {
   const app = express();
+  if (accessToken) {
+    app.use((req, res, next) => {
+      if (req.get('X-MyMail-Token') !== accessToken) return res.status(403).end();
+      next();
+    });
+  }
   app.use(requestDiagnostics);
   app.use(express.json({ limit: '1mb' }));
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
@@ -63,6 +69,22 @@ export function createApp({ runScript = runAppleScript } = {}) {
   // reject a second send even after the message list is refreshed.
   const debugSessions = new Map();
   const automation = { running: false, account: null, mailbox: null, cursor: null, seen: new Set(), timer: null, busy: false, startedAt: null, restartedAt: null, lastCheckAt: null, lastError: null };
+  let automationController;
+  let automationStarting = false;
+  let disposed = false;
+
+  function stopAutomation() {
+    automation.running = false;
+    clearTimeout(automation.timer);
+    automation.timer = null;
+    automationController?.abort();
+  }
+
+  app.locals.shutdown = () => {
+    disposed = true;
+    stopAutomation();
+    debugSessions.clear();
+  };
 
   function automationStatus() {
     return {
@@ -85,37 +107,39 @@ export function createApp({ runScript = runAppleScript } = {}) {
   async function runAutomationCycle() {
     if (!automation.running || automation.busy) return;
     automation.busy = true;
+    const signal = automationController.signal;
     const settings = readSettings();
     try {
       const now = Date.now();
       const restartAfter = Math.max(10, Number(settings.autoRestartSeconds) || 86400) * 1000;
       if (now - Date.parse(automation.restartedAt) >= restartAfter) {
-        const latest = JSON.parse(await runScript(latestCursorScript({ account: automation.account, mailbox: automation.mailbox })));
+        const latest = JSON.parse(await runScript(latestCursorScript({ account: automation.account, mailbox: automation.mailbox }), { signal }));
         automation.cursor = latest || { id: '0', date: '1970-01-01T00:00:00' };
         automation.restartedAt = new Date().toISOString();
         log('automation.listener.restarted', { account: automation.account, mailbox: automation.mailbox, cursor: automation.cursor, reason: 'configured_interval' });
       }
       log('automation.check.started', { account: automation.account, mailbox: automation.mailbox, cursor: automation.cursor });
-      const candidates = JSON.parse(await runScript(messagesAfterScript({ account: automation.account, mailbox: automation.mailbox, afterDate: automation.cursor.date, afterId: automation.cursor.id })));
+      const candidates = JSON.parse(await runScript(messagesAfterScript({ account: automation.account, mailbox: automation.mailbox, afterDate: automation.cursor.date, afterId: automation.cursor.id }), { signal }));
       for (const candidate of candidates) {
-        if (!automation.running) break;
+        if (!automation.running || signal.aborted) break;
         const key = String(candidate.id);
         if (automation.seen.has(key)) continue;
         automation.seen.add(key);
         log('automation.message.discovered', { id: key, date: candidate.date, sender: candidate.sender, subject: candidate.subject, account: automation.account, mailbox: automation.mailbox });
         try {
-          const message = { ...candidate, ...JSON.parse(await runScript(messageDetailScript({ account: automation.account, mailbox: automation.mailbox, id: key }))) };
+          const message = { ...candidate, ...JSON.parse(await runScript(messageDetailScript({ account: automation.account, mailbox: automation.mailbox, id: key }), { signal })) };
           log('automation.reply.generation.started', { id: key, sender: message.sender, subject: message.subject });
-          const reply = await generateReply(settings, message, { instructions: settings.replyInstructions });
+          const reply = await generateReply(settings, message, { instructions: settings.replyInstructions, signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) });
           log('automation.reply.generation.completed', { id: key, characters: reply.length });
-          if (!automation.running) break;
+          if (!automation.running || signal.aborted) break;
           const address = String(message.sender || '').match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/)?.[0];
           if (!address) throw new Error('无法从原邮件中识别发件人地址');
           const subject = /^re:/i.test(String(message.subject || '')) ? message.subject : `Re: ${message.subject || '(无主题)'}`;
           log('automation.send.started', { id: key, to: address, subject });
-          await runScript(sendMessageScript({ to: address, subject, body: reply }));
+          await runScript(sendMessageScript({ to: address, subject, body: reply }), { signal });
           log('automation.send.completed', { id: key, to: address, subject, characters: reply.length });
         } catch (error) {
+          if (signal.aborted) break;
           automation.lastError = String(error?.message || error);
           log('automation.message.failed', { id: key, sender: candidate.sender, subject: candidate.subject, ...safeError(error), reason: automation.lastError });
         }
@@ -128,6 +152,7 @@ export function createApp({ runScript = runAppleScript } = {}) {
       automation.lastError = null;
       log('automation.check.completed', { found: candidates.length, cursor: automation.cursor });
     } catch (error) {
+      if (signal.aborted) return;
       automation.lastError = String(error?.message || error);
       log('automation.check.failed', { account: automation.account, mailbox: automation.mailbox, ...safeError(error), reason: automation.lastError });
     } finally {
@@ -143,9 +168,14 @@ export function createApp({ runScript = runAppleScript } = {}) {
     const account = String(req.body?.account || '');
     const mailbox = String(req.body?.mailbox || '');
     if (!account || !mailbox) return res.status(400).json({ error: '请选择要监听的邮箱文件夹' });
-    if (automation.running) return res.status(409).json({ error: '自动运行已经启动' });
+    if (disposed) return res.status(503).json({ error: '应用正在退出' });
+    if (automation.running || automation.busy || automationStarting) return res.status(409).json({ error: '自动运行已启动或正在停止，请稍后再试' });
+    automationStarting = true;
+    automationController = new AbortController();
+    const signal = AbortSignal.any([automationController.signal, req.upstreamSignal]);
     try {
-      const latest = JSON.parse(await runScript(latestCursorScript({ account, mailbox }), { signal: req.upstreamSignal }));
+      const latest = JSON.parse(await runScript(latestCursorScript({ account, mailbox }), { signal }));
+      signal.throwIfAborted();
       automation.running = true;
       automation.account = account;
       automation.mailbox = mailbox;
@@ -160,13 +190,13 @@ export function createApp({ runScript = runAppleScript } = {}) {
       runAutomationCycle();
     } catch (error) {
       sendDetailedError(req, res, { status: 502, event: 'automation.start.error', fallback: '自动监听未能启动', error });
+    } finally {
+      automationStarting = false;
     }
   });
 
   app.post('/api/automation/stop', (_req, res) => {
-    if (automation.timer) clearTimeout(automation.timer);
-    automation.timer = null;
-    automation.running = false;
+    stopAutomation();
     log('automation.stopped', { account: automation.account, mailbox: automation.mailbox });
     res.json(automationStatus());
   });
