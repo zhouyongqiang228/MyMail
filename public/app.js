@@ -1,13 +1,34 @@
-const state = { allMailboxes: [], mailboxes: [], accounts: [], account: null, selectedMailbox: null, messages: [], currentMessage: null, search: '', openRequest: 0 };
+const state = { allMailboxes: [], mailboxes: [], accounts: [], account: null, selectedMailbox: null, messages: [], currentMessage: null, search: '', openRequest: 0, debugSession: null, debugNew: [], selectedDebugMessage: null, settingsHasKey: false };
 const $ = selector => document.querySelector(selector);
 const isInbox = name => /^(inbox|收件箱)$/i.test(String(name || '').trim());
 const isSent = name => /^(sent|sent messages|已发邮件|已发送)$/i.test(String(name || '').trim());
 
 async function api(url, options = {}) {
-  const response = await fetch(url, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
-  let data;
-  try { data = await response.json(); } catch { data = {}; }
-  if (!response.ok) throw new Error(data.error || '请求失败，请重试');
+  let response;
+  try {
+    response = await fetch(url, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
+  } catch (error) {
+    const detail = error?.message || String(error);
+    throw new Error(`无法连接本地服务。${detail}\n请确认 npm start 仍在运行，并检查浏览器地址是否为 http://localhost:3001。`);
+  }
+  let data = {};
+  let raw = '';
+  try {
+    if (typeof response.text === 'function') {
+      raw = await response.text();
+      try { data = JSON.parse(raw); } catch { data = {}; }
+    } else data = await response.json();
+  } catch { data = {}; }
+  if (!data || typeof data !== 'object') data = {};
+  if (!response.ok) {
+    const parts = [data.error || `请求失败（HTTP ${response.status}）`];
+    const rawReason = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+    const reason = data.reason || rawReason;
+    if (reason && reason !== data.error) parts.push(`详细原因：${reason}`);
+    if (Array.isArray(data.possibleCauses) && data.possibleCauses.length) parts.push(`可能原因：${data.possibleCauses.join('；')}`);
+    if (data.requestId) parts.push(`请求 ID：${data.requestId}`);
+    throw new Error(parts.join('\n'));
+  }
   return data;
 }
 function showError(message) {
@@ -20,6 +41,42 @@ function savedAccount() {
 }
 function saveAccount(account) {
   try { window.localStorage.setItem('mailAccount', account); } catch { /* storage can be unavailable in private contexts */ }
+}
+function debugContextLabel() { return state.selectedMailbox ? `${state.selectedMailbox.account} / ${state.selectedMailbox.name}` : '请选择左侧邮箱文件夹'; }
+function debugLog(step, message, level = 'info') {
+  const line = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${message}`;
+  state.debugLogs ||= { listen: [], check: [], reply: [] };
+  state.debugLogs[step] ||= [];
+  state.debugLogs[step].push({ line, level });
+  const target = document.querySelector(`#${step}Log`);
+  if (target) {
+    target.textContent = state.debugLogs[step].map(item => item.line).join('\n');
+    target.classList.toggle('error', level === 'error');
+  }
+}
+function resetDebugUi() {
+  state.debugSession = null;
+  state.debugNew = [];
+  state.selectedDebugMessage = null;
+  state.debugLogs = { listen: [], check: [], reply: [] };
+  $('#debugContext').textContent = `正在测试：${debugContextLabel()}`;
+  $('#listenStatus').textContent = '尚未开始测试会话';
+  $('#checkStatus').textContent = '请先开始监听。';
+  $('#checkNewButton').disabled = true;
+  $('#resetSessionButton').disabled = true;
+  $('#replyEditor').classList.add('hidden');
+  $('#replyEmpty').classList.remove('hidden');
+  $('#replyStatus').textContent = '';
+  $('#newDebugMessages').replaceChildren(debugMessageElement(null));
+  for (const step of ['listen', 'check', 'reply']) $(`#${step}Log`).textContent = '等待操作。';
+}
+function setDebugSession(session) {
+  state.debugSession = session;
+  $('#debugContext').textContent = `正在测试：${debugContextLabel()}`;
+  $('#listenStatus').textContent = `已开始监听，等待新邮件\n开始时间：${session.startedAt}`;
+  $('#checkStatus').textContent = '等待新邮件；准备好后点击“检查新邮件”。';
+  $('#checkNewButton').disabled = false;
+  $('#resetSessionButton').disabled = false;
 }
 function applyAccountFilter() {
   state.mailboxes = state.allMailboxes.filter(item => item.account === state.account && (isInbox(item.name) || isSent(item.name)));
@@ -55,6 +112,7 @@ async function loadMailboxes() {
     if (!state.selectedMailbox || !state.mailboxes.some(item => mailboxKey(item) === mailboxKey(state.selectedMailbox))) {
       state.selectedMailbox = state.mailboxes.find(item => isInbox(item.name)) || state.mailboxes[0] || null;
     }
+    if (!state.debugSession) $('#debugContext').textContent = `正在测试：${debugContextLabel()}`;
     renderMailboxes();
     if (state.selectedMailbox) await loadMessages();
     else $('#messageList').innerHTML = '<div class="empty-state"><span aria-hidden="true">▱</span><strong>没有可用文件夹</strong><p>当前账号没有找到收件箱或已发邮件。</p></div>';
@@ -96,6 +154,7 @@ function renderMailboxes() {
     button.addEventListener('click', () => {
       state.selectedMailbox = mailbox;
       state.currentMessage = null;
+      resetDebugUi();
       state.search = '';
       $('#searchInput').value = '';
       $('#detailPanel').classList.add('hidden');
@@ -140,6 +199,186 @@ async function loadMessages() {
     $('#messageList p').textContent = error.message;
     $('#retryButton').addEventListener('click', loadMessages);
   } finally { $('#messageList').setAttribute('aria-busy', 'false'); }
+}
+
+function debugMessageElement(message) {
+  if (!message) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-debug';
+    empty.textContent = '还没有发现测试邮件。';
+    return empty;
+  }
+  const card = document.createElement('article');
+  card.className = 'debug-message-card';
+  const heading = document.createElement('div');
+  heading.className = 'debug-message-heading';
+  const subject = document.createElement('strong');
+  subject.textContent = message.subject || '(无主题)';
+  const status = document.createElement('span');
+  status.className = 'debug-message-status';
+  status.textContent = message.debugStatus === 'sent' ? '已发送' : message.debugStatus === 'generated' ? '已生成回复' : message.debugStatus === 'failed' ? '处理失败' : '待处理';
+  heading.append(subject, status);
+  const meta = document.createElement('div');
+  meta.className = 'debug-message-meta';
+  meta.textContent = [message.sender || '未知发件人', message.date || ''].filter(Boolean).join(' · ');
+  const body = document.createElement('pre');
+  body.className = 'debug-message-body';
+  body.textContent = message.body || '';
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = 'button debug-message-action';
+  action.textContent = message.debugStatus === 'sent' ? '已发送' : '生成回复';
+  action.disabled = message.debugStatus === 'sent';
+  action.addEventListener('click', () => selectDebugMessage(message));
+  card.append(heading, meta, body, action);
+  return card;
+}
+function renderDebugNew() {
+  const container = $('#newDebugMessages');
+  container.replaceChildren();
+  if (!state.debugNew.length) { container.append(debugMessageElement(null)); return; }
+  for (const message of state.debugNew) container.append(debugMessageElement(message));
+}
+function compareDebugMessages(left, right) {
+  const dateCompare = String(left?.date || '').localeCompare(String(right?.date || ''));
+  if (dateCompare) return dateCompare;
+  try { return BigInt(String(left?.id || 0)) < BigInt(String(right?.id || 0)) ? -1 : BigInt(String(left?.id || 0)) > BigInt(String(right?.id || 0)) ? 1 : 0; }
+  catch { return String(left?.id || '').localeCompare(String(right?.id || '')); }
+}
+async function startDebugSession() {
+  if (!state.selectedMailbox) return debugLog('listen', '失败：请先从左侧选择邮箱文件夹。', 'error');
+  const button = $('#startSessionButton');
+  button.disabled = true;
+  debugLog('listen', `开始请求监听游标：${debugContextLabel()}`);
+  try {
+    const session = await api('/api/debug/session', { method: 'POST', body: JSON.stringify({ account: state.selectedMailbox.account, mailbox: state.selectedMailbox.name }) });
+    state.debugNew = [];
+    state.selectedDebugMessage = null;
+    setDebugSession(session);
+    renderDebugNew();
+    $('#replyEditor').classList.add('hidden');
+    $('#replyEmpty').classList.remove('hidden');
+    debugLog('listen', `监听已开始。游标：${session.cursor.date} / ID ${session.cursor.id}`);
+  } catch (error) {
+    debugLog('listen', `失败：${error.message}`, 'error');
+    $('#listenStatus').textContent = '监听未开始，可查看下面日志后重试。';
+  } finally { button.disabled = false; }
+}
+async function checkNewDebugMessages() {
+  if (!state.selectedMailbox || !state.debugSession) return debugLog('check', '失败：请先开始监听新邮件。', 'error');
+  const button = $('#checkNewButton');
+  button.disabled = true;
+  debugLog('check', `检查游标之后的新邮件：${state.debugSession.cursor.date} / ID ${state.debugSession.cursor.id}`);
+  try {
+    const result = await api('/api/debug/session/' + encodeURIComponent(state.debugSession.sessionId) + '/messages');
+    const incoming = (result.messages || []).sort(compareDebugMessages);
+    const existing = new Set(state.debugNew.map(message => String(message.id)));
+    const fresh = incoming.filter(message => !existing.has(String(message.id)));
+    state.debugNew.push(...fresh);
+    state.debugNew.sort(compareDebugMessages);
+    if (incoming.length) state.debugSession.cursor = { id: String(incoming[incoming.length - 1].id), date: incoming[incoming.length - 1].date };
+    renderDebugNew();
+    $('#checkStatus').textContent = fresh.length ? `找到 ${fresh.length} 封新邮件` : '没有新邮件；监听仍在等待。';
+    debugLog('check', fresh.length ? `成功：找到 ${fresh.length} 封新邮件，游标已前移。` : '成功：没有新邮件，游标保持不变。');
+  } catch (error) {
+    $('#checkStatus').textContent = '检查失败，可直接重试。';
+    debugLog('check', `失败：${error.message}`, 'error');
+  } finally { button.disabled = false; }
+}
+function selectDebugMessage(message) {
+  state.selectedDebugMessage = message;
+  $('#replyEmpty').classList.add('hidden');
+  $('#replyEditor').classList.remove('hidden');
+  $('#replyMeta').textContent = [message.sender || '未知发件人', message.subject || '(无主题)'].join(' · ');
+  $('#replyBody').value = message.reply || '';
+  $('#replyStatus').textContent = message.debugStatus === 'sent' ? '已发送，不能重复发送' : message.debugStatus === 'failed' ? '处理失败，可以重试。' : message.debugStatus === 'generated' ? '回复已生成，可以编辑后发送。' : '已选择邮件，可以生成回复。';
+  $('#sendReplyButton').disabled = message.debugStatus === 'sent';
+  debugLog('reply', `已选择邮件：${message.subject || '(无主题)'}，ID ${message.id}`);
+}
+async function generateReply() {
+  const message = state.selectedDebugMessage;
+  if (!message || !state.selectedMailbox) return debugLog('reply', '失败：请先从新邮件列表选择一封邮件。', 'error');
+  const button = $('#generateReplyButton');
+  button.disabled = true;
+  $('#replyStatus').textContent = '正在请求 AI 生成回复…';
+  debugLog('reply', `开始生成回复：邮件 ID ${message.id}`);
+  try {
+    const result = await api('/api/debug/messages/' + encodeURIComponent(message.id) + '/generate-reply', { method: 'POST', body: JSON.stringify({ sessionId: state.debugSession?.sessionId }) });
+    message.reply = result.reply || '';
+    message.debugStatus = 'generated';
+    $('#replyBody').value = message.reply;
+    $('#replyMeta').textContent = [result.sender, result.subject].filter(Boolean).join(' · ');
+    $('#replyStatus').textContent = '回复已生成，可以编辑后发送。';
+    renderDebugNew();
+    debugLog('reply', `成功：AI 已生成 ${message.reply.length} 个字符的回复。`);
+  } catch (error) {
+    message.debugStatus = 'failed';
+    renderDebugNew();
+    $('#replyStatus').textContent = '生成失败，可查看日志后重试。';
+    debugLog('reply', `失败：${error.message}`, 'error');
+  } finally { button.disabled = false; }
+}
+async function sendReply() {
+  const message = state.selectedDebugMessage;
+  if (!message || !state.selectedMailbox) return debugLog('reply', '失败：请选择邮件并填写回复正文。', 'error');
+  if (message.debugStatus === 'sent') return debugLog('reply', `已跳过：邮件 ID ${message.id} 已发送过回复，避免重复发送。`, 'error');
+  const button = $('#sendReplyButton');
+  button.disabled = true;
+  $('#replyStatus').textContent = '正在通过 Mail 发送回复…';
+  debugLog('reply', `开始发送回复：邮件 ID ${message.id}`);
+  try {
+    let body = $('#replyBody').value.trim();
+    if (!body) {
+      const generated = await api('/api/debug/messages/' + encodeURIComponent(message.id) + '/generate-reply', { method: 'POST', body: JSON.stringify({ sessionId: state.debugSession?.sessionId }) });
+      body = String(generated.reply || '').trim();
+      $('#replyBody').value = body;
+      message.reply = body;
+      message.debugStatus = 'generated';
+    }
+    if (!body) throw new Error('回复正文不能为空');
+    await api('/api/debug/messages/' + encodeURIComponent(message.id) + '/send-reply', { method: 'POST', body: JSON.stringify({ sessionId: state.debugSession?.sessionId, body }) });
+    message.reply = body;
+    message.debugStatus = 'sent';
+    $('#replyStatus').textContent = '已发送，不能重复发送';
+    renderDebugNew();
+    debugLog('reply', `成功：邮件 ID ${message.id} 已发送回复。`);
+  } catch (error) {
+    message.debugStatus = 'failed';
+    renderDebugNew();
+    $('#replyStatus').textContent = '发送失败，可以修正后重试。';
+    debugLog('reply', `失败：${error.message}`, 'error');
+  } finally { button.disabled = false; }
+}
+async function loadSettings() {
+  try {
+    const settings = await api('/api/settings');
+    $('#apiEndpoint').value = settings.endpoint || '';
+    $('#apiModel').value = settings.model || '';
+    state.settingsHasKey = Boolean(settings.hasApiKey);
+    $('#apiKey').placeholder = state.settingsHasKey ? '已保存密钥，留空表示保持不变' : '输入密钥以保存';
+  } catch (error) { $('#settingsStatus').textContent = error.message; }
+}
+async function saveSettings(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const payload = { endpoint: $('#apiEndpoint').value.trim(), model: $('#apiModel').value.trim(), apiKey: $('#apiKey').value.trim() };
+    const result = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
+    state.settingsHasKey = Boolean(result.hasApiKey);
+    $('#apiKey').value = '';
+    $('#apiKey').placeholder = state.settingsHasKey ? '已保存密钥，留空表示保持不变' : '输入密钥以保存';
+    $('#settingsStatus').textContent = '连接设置已保存';
+  } catch (error) { $('#settingsStatus').textContent = error.message; }
+  finally { button.disabled = false; }
+}
+async function testSettingsConnection() {
+  const button = $('#testConnectionButton');
+  button.disabled = true;
+  $('#settingsStatus').textContent = '正在测试连接…';
+  try { await api('/api/settings/test', { method: 'POST' }); $('#settingsStatus').textContent = '连接测试成功'; }
+  catch (error) { $('#settingsStatus').textContent = error.message; }
+  finally { button.disabled = false; }
 }
 function renderMessages() {
   const query = state.search.trim().toLocaleLowerCase();
@@ -249,6 +488,7 @@ $('#accountSelect').addEventListener('change', async event => {
   saveAccount(state.account);
   state.selectedMailbox = null;
   state.currentMessage = null;
+  resetDebugUi();
   state.search = '';
   $('#searchInput').value = '';
   $('#detailPanel').classList.add('hidden');
@@ -290,4 +530,32 @@ $('#composeForm').addEventListener('submit', async event => {
   } catch (error) { $('#composeStatus').textContent = error.message; }
   finally { button.disabled = false; }
 });
+
+for (const tab of document.querySelectorAll('.automation-tab')) {
+  tab.addEventListener('click', () => {
+    for (const candidate of document.querySelectorAll('.automation-tab')) {
+      const active = candidate === tab;
+      candidate.classList.toggle('active', active);
+      candidate.setAttribute('aria-selected', String(active));
+    }
+    for (const pane of document.querySelectorAll('.automation-pane')) pane.classList.toggle('hidden', pane.id !== tab.getAttribute('aria-controls'));
+  });
+}
+$('#startSessionButton').addEventListener('click', startDebugSession);
+$('#checkNewButton').addEventListener('click', checkNewDebugMessages);
+$('#resetSessionButton').addEventListener('click', () => {
+  if (!window.confirm('这会清除当前测试会话和已发现邮件，是否重新开始？')) return;
+  resetDebugUi();
+});
+$('#generateReplyButton').addEventListener('click', generateReply);
+$('#sendReplyButton').addEventListener('click', sendReply);
+$('#settingsForm').addEventListener('submit', saveSettings);
+$('#testConnectionButton').addEventListener('click', testSettingsConnection);
+$('#toggleApiKey').addEventListener('click', () => {
+  const input = $('#apiKey');
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  $('#toggleApiKey').setAttribute('aria-label', visible ? '显示 API 密钥' : '隐藏 API 密钥');
+});
+loadSettings();
 loadMailboxes();

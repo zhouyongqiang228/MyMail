@@ -36,6 +36,38 @@
       </section>
       <div class="error-toast hidden" id="errorToast" role="alert"><span id="errorText"></span><button id="dismissError" type="button" aria-label="关闭">×</button></div>
     </main>
+
+    <aside class="automation-panel" aria-label="邮件自动化">
+      <div class="automation-tabs" role="tablist" aria-label="自动化功能">
+        <button class="automation-tab active" id="debugTab" type="button" role="tab" aria-selected="true" aria-controls="debugPane">调试</button>
+        <button class="automation-tab" id="autoTab" type="button" role="tab" aria-selected="false" aria-controls="autoPane">自动运行</button>
+        <button class="automation-tab" id="settingsTab" type="button" role="tab" aria-selected="false" aria-controls="settingsPane">设置</button>
+      </div>
+
+      <section class="automation-pane" id="debugPane" role="tabpanel" aria-labelledby="debugTab">
+        <div class="automation-heading"><div><h2>自动回复测试会话</h2><p>用一次测试会话验证“新邮件 → AI 回复 → 发送”。</p></div></div>
+        <div class="debug-context" id="debugContext">请选择左侧邮箱文件夹。</div>
+        <section class="debug-step" id="listenStep"><div class="debug-step-heading"><span class="debug-step-number">1</span><div><h3>开始一次测试</h3><p>点击后记录当前状态。之后进入这个文件夹的新邮件，才会被列为测试对象。</p></div></div><div class="debug-actions"><button class="button button-primary" id="startSessionButton" type="button">开始监听新邮件</button><button class="button" id="resetSessionButton" type="button" disabled>重新开始监听</button></div><div class="debug-step-status" id="listenStatus">尚未开始测试会话</div><pre class="debug-step-log" id="listenLog">等待操作。</pre></section>
+        <section class="debug-step" id="checkStep"><div class="debug-step-heading"><span class="debug-step-number">2</span><div><h3>检查新邮件</h3><p>手动检查，不会覆盖监听位置，也不会重复显示已发现的邮件。</p></div></div><div class="debug-actions"><button class="button" id="checkNewButton" type="button" disabled>检查新邮件</button></div><div class="debug-step-status" id="checkStatus">请先开始监听。</div><div id="newDebugMessages" class="debug-messages"><div class="empty-debug">还没有发现测试邮件。</div></div><pre class="debug-step-log" id="checkLog">等待操作。</pre></section>
+        <section class="debug-step reply-section" id="replyStep"><div class="debug-step-heading"><span class="debug-step-number">3</span><div><h3>生成并发送回复</h3><p>从上面的新邮件中选择一封，先生成内容，再明确发送。</p></div></div><div class="reply-empty" id="replyEmpty">发现新邮件后，在邮件卡片上点击“生成回复”。</div><div id="replyEditor" class="hidden"><div class="reply-meta" id="replyMeta"></div><textarea id="replyBody" class="reply-body" placeholder="AI 生成的回复会显示在这里，你可以先编辑"></textarea><div class="reply-actions"><button class="button" id="generateReplyButton" type="button">仅生成回复</button><button class="button button-primary" id="sendReplyButton" type="button">生成并发送</button></div><div class="automation-status" id="replyStatus" aria-live="polite"></div></div><pre class="debug-step-log" id="replyLog">等待选择邮件。</pre></section>
+      </section>
+
+      <section class="automation-pane hidden" id="autoPane" role="tabpanel" aria-labelledby="autoTab">
+        <div class="automation-heading"><div><h2>自动运行</h2><p>自动化规则将在后续版本中配置。</p></div></div>
+        <div class="automation-placeholder"><span aria-hidden="true">◌</span><strong>暂未启用</strong><p>当前不会自动读取、回复或发送邮件。</p></div>
+      </section>
+
+      <section class="automation-pane hidden" id="settingsPane" role="tabpanel" aria-labelledby="settingsTab">
+        <div class="automation-heading"><div><h2>设置</h2><p>配置兼容 OpenAI API 的服务。</p></div></div>
+        <form id="settingsForm" class="settings-form">
+          <label class="automation-field"><span>API 端点</span><input id="apiEndpoint" name="endpoint" type="url" required placeholder="https://api.openai.com/v1"></label>
+          <label class="automation-field"><span>模型</span><input id="apiModel" name="model" type="text" required placeholder="gpt-4o-mini"></label>
+          <label class="automation-field password-field"><span>API 密钥</span><input id="apiKey" name="apiKey" type="password" autocomplete="off" placeholder="输入密钥以保存或替换"><button id="toggleApiKey" class="password-toggle" type="button" aria-label="显示 API 密钥" title="显示或隐藏密钥">◉</button></label>
+          <div class="settings-actions"><button class="button" id="testConnectionButton" type="button">测试连接</button><button class="button button-primary" type="submit">保存连接</button></div>
+          <div class="automation-status" id="settingsStatus" aria-live="polite"></div>
+        </form>
+      </section>
+    </aside>
   </div>
 
   <dialog id="composeDialog" class="compose-dialog">

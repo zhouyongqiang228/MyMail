@@ -100,3 +100,19 @@ test('compose form sends through the local Mail API', async t => {
   assert.ok(send);
   assert.deepEqual(JSON.parse(send.options.body), { to: 'reader@example.test', cc: '', bcc: '', subject: '问候', body: '你好' });
 });
+
+test('debug session shows the full server failure details', async t => {
+  const app = await makeApp(t);
+  app.dom.window.fetch = async () => result({
+    error: '无法开始监听新邮件',
+    reason: 'Not authorized to send Apple events to Mail (-1743)',
+    possibleCauses: ['请在系统设置中允许自动化'],
+    requestId: 'abcd1234',
+  }, 502);
+  app.document.querySelector('#startSessionButton').click();
+  await settle();
+  const message = app.document.querySelector('#listenLog').textContent;
+  assert.match(message, /Not authorized/);
+  assert.match(message, /自动化/);
+  assert.match(message, /abcd1234/);
+});
