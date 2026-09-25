@@ -25,6 +25,9 @@ async function makeApp(t, { detailData = detail, mailboxData } = {}) {
       { account: 'Work', name: 'INBOX', unread: 2 },
       { account: 'Work', name: '已发邮件', unread: 0 },
     ] });
+    if (url === '/api/settings') return result({ endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasApiKey: false, autoCheckSeconds: 600, autoRestartSeconds: 86400 });
+    if (url === '/api/automation') return result({ running: false });
+    if (url.startsWith('/api/automation/logs')) return result({ logs: [] });
     if (String(url).startsWith('/api/messages?')) return result({ messages: [message] });
     if (String(url).startsWith('/api/messages/42/read')) return result({ ok: true });
     if (String(url).startsWith('/api/messages/42?')) return result(detailData);
@@ -53,6 +56,16 @@ test('connects to Apple Mail and lists real mailboxes without demo messages', as
   assert.equal(app.document.querySelector('.message-subject').textContent, '周末安排');
   assert.ok(app.calls.some(call => call.url === '/api/mailboxes'));
   assert.doesNotMatch(script, /demoMessages|alex@example\.com|连接 Gmail/);
+});
+
+test('opens on automatic reply controls and exposes both interval settings', async t => {
+  const app = await makeApp(t);
+  assert.deepEqual([...app.document.querySelectorAll('.automation-tab')].map(tab => tab.textContent), ['自动运行', '设置']);
+  assert.equal(app.document.querySelector('#autoPane').classList.contains('hidden'), false);
+  assert.equal(app.document.querySelector('#debugPane').classList.contains('hidden'), true);
+  assert.ok(app.document.querySelector('#autoLog'));
+  assert.equal(app.document.querySelector('#autoCheckSeconds').value, '600');
+  assert.equal(app.document.querySelector('#autoRestartSeconds').value, '86400');
 });
 
 test('defaults to the first account and lets the user switch the two visible folders', async t => {

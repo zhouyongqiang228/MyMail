@@ -384,6 +384,8 @@ async function loadSettings() {
     const settings = await api('/api/settings');
     $('#apiEndpoint').value = settings.endpoint || '';
     $('#apiModel').value = settings.model || '';
+    $('#autoCheckSeconds').value = settings.autoCheckSeconds ?? 600;
+    $('#autoRestartSeconds').value = settings.autoRestartSeconds ?? 86400;
     state.settingsHasKey = Boolean(settings.hasApiKey);
     $('#apiKey').placeholder = state.settingsHasKey ? '已保存密钥，留空表示保持不变' : '输入密钥以保存';
   } catch (error) { $('#settingsStatus').textContent = error.message; }
@@ -393,7 +395,7 @@ async function saveSettings(event) {
   const button = event.currentTarget.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    const payload = { endpoint: $('#apiEndpoint').value.trim(), model: $('#apiModel').value.trim(), apiKey: $('#apiKey').value.trim() };
+    const payload = { endpoint: $('#apiEndpoint').value.trim(), model: $('#apiModel').value.trim(), apiKey: $('#apiKey').value.trim(), autoCheckSeconds: Number($('#autoCheckSeconds').value), autoRestartSeconds: Number($('#autoRestartSeconds').value) };
     const result = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
     state.settingsHasKey = Boolean(result.hasApiKey);
     $('#apiKey').value = '';
@@ -401,6 +403,41 @@ async function saveSettings(event) {
     $('#settingsStatus').textContent = '连接设置已保存';
   } catch (error) { $('#settingsStatus').textContent = error.message; }
   finally { button.disabled = false; }
+}
+function renderAutomationStatus(status) {
+  const running = Boolean(status?.running);
+  $('#startAutoButton').disabled = running || !state.selectedMailbox;
+  $('#stopAutoButton').disabled = !running;
+  $('#autoContext').textContent = running ? `正在监听：${status.account} / ${status.mailbox}` : `待监听：${debugContextLabel()}`;
+  $('#autoStatus').textContent = running
+    ? `运行中 · 启动于 ${status.startedAt || ''} · 最近检查 ${status.lastCheckAt || '等待首次检查'}${status.lastError ? ` · 最近错误：${status.lastError}` : ''}`
+    : '自动运行未启动';
+}
+async function refreshAutomationLogs() {
+  try {
+    const [status, result] = await Promise.all([api('/api/automation'), api('/api/automation/logs?limit=500')]);
+    renderAutomationStatus(status);
+    const events = (result.logs || []).filter(entry => String(entry.event || '').startsWith('automation.'));
+    $('#autoLog').textContent = events.length ? events.map(entry => JSON.stringify(entry)).join('\n') : '等待自动运行日志。';
+    $('#autoLog').scrollTop = $('#autoLog').scrollHeight;
+  } catch (error) { $('#autoStatus').textContent = error.message; }
+}
+async function startAutomation() {
+  if (!state.selectedMailbox) return;
+  $('#startAutoButton').disabled = true;
+  $('#autoStatus').textContent = '正在启动自动回复…';
+  try {
+    const status = await api('/api/automation/start', { method: 'POST', body: JSON.stringify({ account: state.selectedMailbox.account, mailbox: state.selectedMailbox.name }) });
+    renderAutomationStatus(status);
+    await refreshAutomationLogs();
+  } catch (error) { $('#autoStatus').textContent = error.message; $('#startAutoButton').disabled = false; }
+}
+async function stopAutomation() {
+  $('#stopAutoButton').disabled = true;
+  try {
+    renderAutomationStatus(await api('/api/automation/stop', { method: 'POST' }));
+    await refreshAutomationLogs();
+  } catch (error) { $('#autoStatus').textContent = error.message; $('#stopAutoButton').disabled = false; }
 }
 async function testSettingsConnection() {
   const button = $('#testConnectionButton');
@@ -595,6 +632,9 @@ $('#generateReplyButton').addEventListener('click', generateReply);
 $('#sendReplyButton').addEventListener('click', sendReply);
 $('#settingsForm').addEventListener('submit', saveSettings);
 $('#testConnectionButton').addEventListener('click', testSettingsConnection);
+$('#startAutoButton').addEventListener('click', startAutomation);
+$('#stopAutoButton').addEventListener('click', stopAutomation);
+$('#refreshAutoLogs').addEventListener('click', refreshAutomationLogs);
 $('#toggleApiKey').addEventListener('click', () => {
   const input = $('#apiKey');
   const visible = input.type === 'text';
@@ -603,3 +643,5 @@ $('#toggleApiKey').addEventListener('click', () => {
 });
 loadSettings();
 loadMailboxes();
+refreshAutomationLogs();
+setInterval(refreshAutomationLogs, 2000);

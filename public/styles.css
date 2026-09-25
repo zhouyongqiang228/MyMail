@@ -89,7 +89,7 @@ h1 { margin: 0; font-size: 17px; font-weight: 620; }
 .error-toast { position: absolute; right: 20px; bottom: 18px; display: flex; align-items: center; gap: 22px; max-width: calc(100% - 40px); padding: 10px 12px 10px 15px; border: 1px solid #e8d6bf; border-radius: 5px; background: #fff9f1; box-shadow: 0 3px 14px #25352e12; color: #695033; font-size: 12px; }
 .error-toast button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 19px; }
 .automation-panel { min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
-.automation-tabs { display: grid; grid-template-columns: repeat(3, 1fr); min-height: 48px; border-bottom: 1px solid var(--line); }
+.automation-tabs { display: grid; grid-template-columns: repeat(2, 1fr); min-height: 48px; border-bottom: 1px solid var(--line); }
 .automation-tab { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #77817c; cursor: pointer; font-size: 12px; }
 .automation-tab:hover { color: var(--green); background: #fafcfb; }
 .automation-tab.active { border-bottom-color: var(--green); color: #17684f; font-weight: 650; }
@@ -127,6 +127,10 @@ h1 { margin: 0; font-size: 17px; font-weight: 620; }
 .automation-placeholder span { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 12px; border-radius: 50%; background: #eff5f2; color: #4e8b75; font-size: 23px; }
 .automation-placeholder strong { color: #4b5751; font-size: 13px; }
 .automation-placeholder p { margin: 8px 0 0; font-size: 11px; line-height: 1.6; }
+.auto-context { margin: 0 0 12px; color: #58655e; font-size: 11px; overflow-wrap: anywhere; }
+.auto-log-heading { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 7px; }
+.auto-log-heading h3 { margin: 0; color: #65716b; font-size: 11px; font-weight: 650; }
+.auto-log { min-height: 230px; max-height: min(52vh, 520px); margin: 0; padding: 10px; overflow: auto; border: 1px solid #e3e8e5; border-radius: 4px; background: #f8faf9; color: #35423b; font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .settings-form { display: flex; flex-direction: column; }
 .password-field input { padding-right: 38px; }
 .password-toggle { position: absolute; right: 5px; bottom: 4px; width: 27px; height: 25px; border: 0; border-radius: 4px; background: transparent; color: #718078; cursor: pointer; font-size: 13px; }

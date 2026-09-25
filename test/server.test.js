@@ -123,3 +123,41 @@ test('debug test sessions keep discovered messages and reject duplicate sends', 
   const clearedSend = await fetch(base + '/api/debug/messages/9/send-reply', { ...json, method: 'POST', body: JSON.stringify({ sessionId: session.sessionId, body: 'Again' }) });
   assert.equal(clearedSend.status, 404);
 });
+
+test('automatic listener starts on a mailbox, emits logs and stops cleanly', async t => {
+  const scripts = [];
+  const app = createApp({ runScript: async script => {
+    scripts.push(script);
+    if (script.includes('if (count of allMessages) is 0')) return JSON.stringify({ id: '8', date: '2026-09-24T01:00:00' });
+    if (script.includes('set candidateRows to {}')) return '[]';
+    return 'ok';
+  } });
+  const server = createServer(app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const json = { headers: { 'Content-Type': 'application/json' } };
+  const started = await fetch(base + '/api/automation/start', { ...json, method: 'POST', body: JSON.stringify({ account: 'Personal', mailbox: 'Inbox' }) });
+  assert.equal(started.status, 200);
+  assert.equal((await started.json()).running, true);
+  await new Promise(resolve => setImmediate(resolve));
+  const logs = await fetch(base + '/api/automation/logs?limit=20').then(response => response.json());
+  assert.ok(logs.logs.some(entry => entry.event === 'automation.started'));
+  assert.ok(logs.logs.some(entry => entry.event === 'automation.check.completed'));
+  assert.ok(scripts.some(script => script.includes('set candidateRows to {}')));
+  const stopped = await fetch(base + '/api/automation/stop', { method: 'POST' }).then(response => response.json());
+  assert.equal(stopped.running, false);
+});
+
+test('settings reject invalid automation intervals', async t => {
+  const app = createApp();
+  const server = createServer(app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await fetch('http://127.0.0.1:' + server.address().port + '/api/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'https://api.example.test/v1', model: 'test', autoCheckSeconds: 1, autoRestartSeconds: 86400 }),
+  });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /整数秒数/);
+});

@@ -6,7 +6,7 @@ import {
   messagesAfterScript,
   runAppleScript, sendMessageScript,
 } from './lib/applescript.js';
-import { log, logPath, requestDiagnostics, safeError } from './lib/diagnostics.js';
+import { log, logPath, recentLogEntries, requestDiagnostics, safeError } from './lib/diagnostics.js';
 import { generateReply, testConnection } from './lib/ai.js';
 import { publicSettings, readSettings, writeSettings } from './lib/settings.js';
 
@@ -53,16 +53,123 @@ function sendDetailedError(req, res, { status = 502, event, fallback, error }) {
 
 export function createApp({ runScript = runAppleScript } = {}) {
   const app = express();
-  // Debug sessions live for the lifetime of this local server. Keeping the
-  // discovered messages here makes repeated checks idempotent and lets us
-  // reject a second send even after the message list is refreshed.
-  const debugSessions = new Map();
   app.use(requestDiagnostics);
   app.use(express.json({ limit: '1mb' }));
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(express.static(path.join(__dirname, 'public')));
   app.get('/favicon.ico', (_req, res) => res.status(204).end());
+  // Debug sessions live for the lifetime of this local server. Keeping the
+  // discovered messages here makes repeated checks idempotent and lets us
+  // reject a second send even after the message list is refreshed.
+  const debugSessions = new Map();
+  const automation = { running: false, account: null, mailbox: null, cursor: null, seen: new Set(), timer: null, busy: false, startedAt: null, restartedAt: null, lastCheckAt: null, lastError: null };
 
+  function automationStatus() {
+    return {
+      running: automation.running,
+      account: automation.account,
+      mailbox: automation.mailbox,
+      startedAt: automation.startedAt,
+      restartedAt: automation.restartedAt,
+      lastCheckAt: automation.lastCheckAt,
+      lastError: automation.lastError,
+    };
+  }
+
+  function scheduleAutomation() {
+    if (!automation.running) return;
+    const delay = Math.max(10, Number(readSettings().autoCheckSeconds) || 600) * 1000;
+    automation.timer = setTimeout(() => runAutomationCycle(), delay);
+  }
+
+  async function runAutomationCycle() {
+    if (!automation.running || automation.busy) return;
+    automation.busy = true;
+    const settings = readSettings();
+    try {
+      const now = Date.now();
+      const restartAfter = Math.max(10, Number(settings.autoRestartSeconds) || 86400) * 1000;
+      if (now - Date.parse(automation.restartedAt) >= restartAfter) {
+        const latest = JSON.parse(await runScript(latestCursorScript({ account: automation.account, mailbox: automation.mailbox })));
+        automation.cursor = latest || { id: '0', date: '1970-01-01T00:00:00' };
+        automation.restartedAt = new Date().toISOString();
+        log('automation.listener.restarted', { account: automation.account, mailbox: automation.mailbox, cursor: automation.cursor, reason: 'configured_interval' });
+      }
+      log('automation.check.started', { account: automation.account, mailbox: automation.mailbox, cursor: automation.cursor });
+      const candidates = JSON.parse(await runScript(messagesAfterScript({ account: automation.account, mailbox: automation.mailbox, afterDate: automation.cursor.date, afterId: automation.cursor.id })));
+      for (const candidate of candidates) {
+        if (!automation.running) break;
+        const key = String(candidate.id);
+        if (automation.seen.has(key)) continue;
+        automation.seen.add(key);
+        log('automation.message.discovered', { id: key, date: candidate.date, sender: candidate.sender, subject: candidate.subject, account: automation.account, mailbox: automation.mailbox });
+        try {
+          const message = { ...candidate, ...JSON.parse(await runScript(messageDetailScript({ account: automation.account, mailbox: automation.mailbox, id: key }))) };
+          log('automation.reply.generation.started', { id: key, sender: message.sender, subject: message.subject });
+          const reply = await generateReply(settings, message);
+          log('automation.reply.generation.completed', { id: key, characters: reply.length });
+          if (!automation.running) break;
+          const address = String(message.sender || '').match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/)?.[0];
+          if (!address) throw new Error('无法从原邮件中识别发件人地址');
+          const subject = /^re:/i.test(String(message.subject || '')) ? message.subject : `Re: ${message.subject || '(无主题)'}`;
+          log('automation.send.started', { id: key, to: address, subject });
+          await runScript(sendMessageScript({ to: address, subject, body: reply }));
+          log('automation.send.completed', { id: key, to: address, subject, characters: reply.length });
+        } catch (error) {
+          automation.lastError = String(error?.message || error);
+          log('automation.message.failed', { id: key, sender: candidate.sender, subject: candidate.subject, ...safeError(error), reason: automation.lastError });
+        }
+      }
+      if (candidates.length) {
+        const last = candidates[candidates.length - 1];
+        automation.cursor = { id: String(last.id), date: String(last.date) };
+      }
+      automation.lastCheckAt = new Date().toISOString();
+      automation.lastError = null;
+      log('automation.check.completed', { found: candidates.length, cursor: automation.cursor });
+    } catch (error) {
+      automation.lastError = String(error?.message || error);
+      log('automation.check.failed', { account: automation.account, mailbox: automation.mailbox, ...safeError(error), reason: automation.lastError });
+    } finally {
+      automation.busy = false;
+      scheduleAutomation();
+    }
+  }
+
+  app.get('/api/automation', (_req, res) => res.json(automationStatus()));
+  app.get('/api/automation/logs', (req, res) => res.json({ logs: recentLogEntries(req.query.limit) }));
+
+  app.post('/api/automation/start', async (req, res) => {
+    const account = String(req.body?.account || '');
+    const mailbox = String(req.body?.mailbox || '');
+    if (!account || !mailbox) return res.status(400).json({ error: '请选择要监听的邮箱文件夹' });
+    if (automation.running) return res.status(409).json({ error: '自动运行已经启动' });
+    try {
+      const latest = JSON.parse(await runScript(latestCursorScript({ account, mailbox }), { signal: req.upstreamSignal }));
+      automation.running = true;
+      automation.account = account;
+      automation.mailbox = mailbox;
+      automation.cursor = latest || { id: '0', date: '1970-01-01T00:00:00' };
+      automation.seen = new Set();
+      automation.startedAt = new Date().toISOString();
+      automation.restartedAt = automation.startedAt;
+      automation.lastCheckAt = null;
+      automation.lastError = null;
+      log('automation.started', { account, mailbox, cursor: automation.cursor, autoCheckSeconds: readSettings().autoCheckSeconds, autoRestartSeconds: readSettings().autoRestartSeconds });
+      res.json(automationStatus());
+      runAutomationCycle();
+    } catch (error) {
+      sendDetailedError(req, res, { status: 502, event: 'automation.start.error', fallback: '自动监听未能启动', error });
+    }
+  });
+
+  app.post('/api/automation/stop', (_req, res) => {
+    if (automation.timer) clearTimeout(automation.timer);
+    automation.timer = null;
+    automation.running = false;
+    log('automation.stopped', { account: automation.account, mailbox: automation.mailbox });
+    res.json(automationStatus());
+  });
   const runJson = async (req, res, script) => {
     try {
       const output = await runScript(script, { signal: req.upstreamSignal });
@@ -262,13 +369,18 @@ export function createApp({ runScript = runAppleScript } = {}) {
     const model = String(req.body?.model || '').trim();
     const apiKey = String(req.body?.apiKey || '').trim();
     if (!endpoint || !model) return res.status(400).json({ error: 'API 端点和模型不能为空' });
+    const autoCheckSeconds = Number(req.body?.autoCheckSeconds ?? current.autoCheckSeconds);
+    const autoRestartSeconds = Number(req.body?.autoRestartSeconds ?? current.autoRestartSeconds);
+    if (!Number.isInteger(autoCheckSeconds) || autoCheckSeconds < 10 || autoCheckSeconds > 2592000 || !Number.isInteger(autoRestartSeconds) || autoRestartSeconds < 10 || autoRestartSeconds > 2592000) {
+      return res.status(400).json({ error: '自动检测和重新监听时间必须是 10 到 2592000 之间的整数秒数' });
+    }
     try {
       const parsed = new URL(endpoint);
       if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
     } catch {
       return res.status(400).json({ error: 'API 端点必须是有效的 HTTP 或 HTTPS 地址' });
     }
-    const saved = writeSettings({ endpoint, model, apiKey: apiKey || current.apiKey });
+    const saved = writeSettings({ endpoint, model, apiKey: apiKey || current.apiKey, autoCheckSeconds, autoRestartSeconds });
     res.json(publicSettings(saved));
   });
 
