@@ -10,7 +10,7 @@ const settle = async () => { await new Promise(resolve => setImmediate(resolve))
 const message = { id: '42', sender: 'Lin <lin@example.test>', subject: '周末安排', date: '2026-09-23T01:00:00Z', read: false, flagged: true };
 const detail = { ...message, body: '你好\n周末见。' };
 
-async function makeApp(t, { detailData = detail, mailboxData } = {}) {
+async function makeApp(t, { detailData = detail, mailboxData, automationLogs = [] } = {}) {
   const dom = new JSDOM(html, { url: 'http://localhost:3001', runScripts: 'outside-only' });
   const calls = [];
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -25,9 +25,9 @@ async function makeApp(t, { detailData = detail, mailboxData } = {}) {
       { account: 'Work', name: 'INBOX', unread: 2 },
       { account: 'Work', name: '已发邮件', unread: 0 },
     ] });
-    if (url === '/api/settings') return result({ endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasApiKey: false, autoCheckSeconds: 600, autoRestartSeconds: 86400 });
+    if (url === '/api/settings') return result({ endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasApiKey: false, replyInstructions: '', autoCheckSeconds: 600, autoRestartSeconds: 86400 });
     if (url === '/api/automation') return result({ running: false });
-    if (url.startsWith('/api/automation/logs')) return result({ logs: [] });
+    if (url.startsWith('/api/automation/logs')) return result({ logs: automationLogs });
     if (String(url).startsWith('/api/messages?')) return result({ messages: [message] });
     if (String(url).startsWith('/api/messages/42/read')) return result({ ok: true });
     if (String(url).startsWith('/api/messages/42?')) return result(detailData);
@@ -66,6 +66,37 @@ test('opens on automatic reply controls and exposes both interval settings', asy
   assert.ok(app.document.querySelector('#autoLog'));
   assert.equal(app.document.querySelector('#autoCheckSeconds').value, '600');
   assert.equal(app.document.querySelector('#autoRestartSeconds').value, '86400');
+  assert.ok(app.document.querySelector('#autoReplyInstructions'));
+});
+
+test('saves reply preferences from the automatic run tab', async t => {
+  const app = await makeApp(t);
+  app.document.querySelector('#autoReplyInstructions').value = '如果有人向我借钱，请礼貌婉拒。';
+  app.document.querySelector('#saveAutoReplyInstructions').click();
+  await settle();
+  const request = app.calls.find(call => call.url === '/api/settings' && call.options.method === 'PUT');
+  assert.deepEqual(JSON.parse(request.options.body), {
+    endpoint: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    replyInstructions: '如果有人向我借钱，请礼貌婉拒。',
+    autoCheckSeconds: 600,
+    autoRestartSeconds: 86400,
+  });
+  assert.equal(app.document.querySelector('#autoReplyInstructionsStatus').textContent, '已保存');
+});
+
+test('renders automatic run logs as Chinese step messages like the debug log', async t => {
+  const app = await makeApp(t, { automationLogs: [
+    { time: '2026-09-25T08:00:00.000Z', event: 'automation.message.discovered', sender: 'reader@example.test', subject: '会议安排' },
+    { time: '2026-09-25T08:00:01.000Z', event: 'automation.message.failed', reason: '无法识别发件人地址', code: 'MAIL_ADDRESS' },
+    { time: '2026-09-25T08:00:02.000Z', event: 'automation.check.completed', found: 1 },
+  ] });
+  const log = app.document.querySelector('#autoLog').textContent;
+  assert.match(log, /发现新邮件：会议安排/);
+  assert.match(log, /邮件处理失败：无法识别发件人地址/);
+  assert.match(log, /错误码：MAIL_ADDRESS/);
+  assert.match(log, /检查完成：发现 1 封新邮件/);
+  assert.doesNotMatch(log, /automation\.message\.discovered|\"event\"/);
 });
 
 test('defaults to the first account and lets the user switch the two visible folders', async t => {

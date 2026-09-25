@@ -57,6 +57,10 @@
         <div class="auto-context" id="autoContext">请选择左侧要监听的邮箱文件夹。</div>
         <div class="debug-actions"><button class="button button-primary" id="startAutoButton" type="button">启动自动回复</button><button class="button" id="stopAutoButton" type="button" disabled>停止</button></div>
         <div class="automation-status" id="autoStatus" aria-live="polite">自动运行未启动</div>
+        <div class="auto-preferences">
+          <label class="automation-field" for="autoReplyInstructions"><span>回复偏好</span><textarea id="autoReplyInstructions" rows="4" maxlength="2000" placeholder="例如：如果有人向我借钱，请礼貌婉拒。这里的描述会用于生成自动回复。"></textarea></label>
+          <div class="settings-actions"><button class="button" id="saveAutoReplyInstructions" type="button">保存回复偏好</button><span class="automation-status" id="autoReplyInstructionsStatus" aria-live="polite"></span></div>
+        </div>
         <div class="auto-log-heading"><h3>运行日志</h3><button class="text-button" id="refreshAutoLogs" type="button">刷新</button></div>
         <pre class="auto-log" id="autoLog" aria-live="polite">等待自动运行日志。</pre>
       </section>

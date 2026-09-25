@@ -386,9 +386,31 @@ async function loadSettings() {
     $('#apiModel').value = settings.model || '';
     $('#autoCheckSeconds').value = settings.autoCheckSeconds ?? 600;
     $('#autoRestartSeconds').value = settings.autoRestartSeconds ?? 86400;
+    $('#autoReplyInstructions').value = settings.replyInstructions || '';
     state.settingsHasKey = Boolean(settings.hasApiKey);
     $('#apiKey').placeholder = state.settingsHasKey ? '已保存密钥，留空表示保持不变' : '输入密钥以保存';
   } catch (error) { $('#settingsStatus').textContent = error.message; }
+}
+async function saveAutoReplyInstructions() {
+  const button = $('#saveAutoReplyInstructions');
+  const status = $('#autoReplyInstructionsStatus');
+  button.disabled = true;
+  status.textContent = '正在保存…';
+  try {
+    const settings = await api('/api/settings');
+    const payload = {
+      endpoint: settings.endpoint,
+      model: settings.model,
+      replyInstructions: $('#autoReplyInstructions').value.trim(),
+      autoCheckSeconds: settings.autoCheckSeconds,
+      autoRestartSeconds: settings.autoRestartSeconds,
+    };
+    const saved = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
+    $('#autoReplyInstructions').value = saved.replyInstructions || '';
+    status.textContent = '已保存';
+  } catch (error) {
+    status.textContent = error.message;
+  } finally { button.disabled = false; }
 }
 async function saveSettings(event) {
   event.preventDefault();
@@ -413,12 +435,42 @@ function renderAutomationStatus(status) {
     ? `运行中 · 启动于 ${status.startedAt || ''} · 最近检查 ${status.lastCheckAt || '等待首次检查'}${status.lastError ? ` · 最近错误：${status.lastError}` : ''}`
     : '自动运行未启动';
 }
+function automationLogLine(entry) {
+  const time = new Date(entry?.time);
+  const stamp = Number.isNaN(time.getTime()) ? '' : `[${time.toLocaleTimeString('zh-CN', { hour12: false })}] `;
+  const fields = entry || {};
+  const subject = fields.subject || '无主题';
+  const sender = fields.sender || fields.to || '未知联系人';
+  const mailbox = [fields.account, fields.mailbox].filter(Boolean).join(' / ');
+  const cursor = fields.cursor?.date ? `游标已更新至 ${fields.cursor.date}` : '';
+  const code = fields.code ? `错误码：${fields.code}` : '';
+  const requestId = fields.requestId ? `请求 ID：${fields.requestId}` : '';
+  const reason = fields.reason || '未知原因';
+  const messages = {
+    'automation.started': `自动运行已启动${mailbox ? `：${mailbox}` : ''}。`,
+    'automation.stopped': `自动运行已停止${mailbox ? `：${mailbox}` : ''}。`,
+    'automation.listener.restarted': `监听位置已重新建立${cursor ? `，${cursor}` : ''}。`,
+    'automation.check.started': '开始检查新邮件。',
+    'automation.message.discovered': `发现新邮件：${subject}（${sender}）。`,
+    'automation.reply.generation.started': `开始生成 AI 回复：${subject}。`,
+    'automation.reply.generation.completed': `AI 回复生成完成：${fields.characters || 0} 个字符。`,
+    'automation.send.started': `开始发送回复：${subject}。`,
+    'automation.send.completed': `回复发送完成：${sender}${fields.characters != null ? `，${fields.characters} 个字符` : ''}。`,
+    'automation.message.failed': `邮件处理失败：${reason}。`,
+    'automation.check.completed': `检查完成：发现 ${fields.found || 0} 封新邮件。`,
+    'automation.check.failed': `检查失败：${reason}。`,
+  };
+  let message = messages[entry?.event] || '自动运行记录：发生未分类事件。';
+  const diagnostics = [code, requestId].filter(Boolean).join('；');
+  if (diagnostics) message += `（${diagnostics}）`;
+  return `${stamp}${message}`;
+}
 async function refreshAutomationLogs() {
   try {
     const [status, result] = await Promise.all([api('/api/automation'), api('/api/automation/logs?limit=500')]);
     renderAutomationStatus(status);
     const events = (result.logs || []).filter(entry => String(entry.event || '').startsWith('automation.'));
-    $('#autoLog').textContent = events.length ? events.map(entry => JSON.stringify(entry)).join('\n') : '等待自动运行日志。';
+    $('#autoLog').textContent = events.length ? events.map(automationLogLine).join('\n') : '等待自动运行日志。';
     $('#autoLog').scrollTop = $('#autoLog').scrollHeight;
   } catch (error) { $('#autoStatus').textContent = error.message; }
 }
@@ -635,6 +687,7 @@ $('#testConnectionButton').addEventListener('click', testSettingsConnection);
 $('#startAutoButton').addEventListener('click', startAutomation);
 $('#stopAutoButton').addEventListener('click', stopAutomation);
 $('#refreshAutoLogs').addEventListener('click', refreshAutomationLogs);
+$('#saveAutoReplyInstructions').addEventListener('click', saveAutoReplyInstructions);
 $('#toggleApiKey').addEventListener('click', () => {
   const input = $('#apiKey');
   const visible = input.type === 'text';

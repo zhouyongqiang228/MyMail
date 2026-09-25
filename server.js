@@ -106,7 +106,7 @@ export function createApp({ runScript = runAppleScript } = {}) {
         try {
           const message = { ...candidate, ...JSON.parse(await runScript(messageDetailScript({ account: automation.account, mailbox: automation.mailbox, id: key }))) };
           log('automation.reply.generation.started', { id: key, sender: message.sender, subject: message.subject });
-          const reply = await generateReply(settings, message);
+          const reply = await generateReply(settings, message, { instructions: settings.replyInstructions });
           log('automation.reply.generation.completed', { id: key, characters: reply.length });
           if (!automation.running) break;
           const address = String(message.sender || '').match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/)?.[0];
@@ -371,6 +371,7 @@ export function createApp({ runScript = runAppleScript } = {}) {
     if (!endpoint || !model) return res.status(400).json({ error: 'API 端点和模型不能为空' });
     const autoCheckSeconds = Number(req.body?.autoCheckSeconds ?? current.autoCheckSeconds);
     const autoRestartSeconds = Number(req.body?.autoRestartSeconds ?? current.autoRestartSeconds);
+    const replyInstructions = String(req.body?.replyInstructions ?? current.replyInstructions ?? '').trim().slice(0, 2000);
     if (!Number.isInteger(autoCheckSeconds) || autoCheckSeconds < 10 || autoCheckSeconds > 2592000 || !Number.isInteger(autoRestartSeconds) || autoRestartSeconds < 10 || autoRestartSeconds > 2592000) {
       return res.status(400).json({ error: '自动检测和重新监听时间必须是 10 到 2592000 之间的整数秒数' });
     }
@@ -380,7 +381,7 @@ export function createApp({ runScript = runAppleScript } = {}) {
     } catch {
       return res.status(400).json({ error: 'API 端点必须是有效的 HTTP 或 HTTPS 地址' });
     }
-    const saved = writeSettings({ endpoint, model, apiKey: apiKey || current.apiKey, autoCheckSeconds, autoRestartSeconds });
+    const saved = writeSettings({ endpoint, model, apiKey: apiKey || current.apiKey, replyInstructions, autoCheckSeconds, autoRestartSeconds });
     res.json(publicSettings(saved));
   });
 
